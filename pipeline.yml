@@ -1,0 +1,239 @@
+---
+variables:
+  - type: String
+    name: Ignore Compliance Status
+    key: ignore_compliance
+    value: PASSED
+    required: false
+    visible: true
+    default: true
+    description: Comma separated list of compliance result status to ignore.
+  - type: String
+    name: Ingore Vulnerability Risk
+    key: ignore_vulnerability
+    value: 'None,Info,Low,Medium'
+    required: false
+    visible: true
+    default: true
+    description: Comma separated list of vulnerability risk factors to ignore.
+  - type: String
+    name: Scan Name
+    key: scan_name
+    required: true
+    visible: true
+    default: false
+steps:
+  - id: py1
+    name: Tenable.io Scan
+    type: python_script
+    depends:
+      - shell1
+    properties:
+      content: |-
+        #!/usr/bin/env python3
+
+        import json
+        import re
+        import os
+        import time
+        import argparse
+
+        import xml.etree.ElementTree as ET
+
+        from tenable.io import TenableIO
+
+
+        def print_results(nessus_file, ignore_vulnerability, ignore_compliance):
+            status = True
+            ignore_vulnerability = ignore_vulnerability.split(',')
+            ignore_compliance = ignore_compliance.split(',')
+
+            print('[+] Results:')
+            root = ET.parse(nessus_file).getroot()
+            for report_item in root.iter("ReportItem"):
+                description = report_item.findall('.//description')[0].text.strip()
+                if report_item.attrib["pluginFamily"] == "Policy Compliance":
+                    state = description.splitlines()[0]
+                    state = state.split('[')[-1].split(']')[0]
+                    if state.split('[')[-1].split(']')[0] not in ignore_compliance:
+                        description = '\033[91m' + description
+                        status = False
+                else:
+                    risk = report_item.findall('.//risk_factor')[0].text
+                    if risk not in ignore_vulnerability:
+                        description = '\033[91m' + description
+                        status = False
+
+                print('{}\033[0m'.format(description))
+                print('-'*80)
+
+            return status
+
+
+        def get_scan_id(tio, name):
+
+            for scan in tio.scans.list():
+                if scan['name'] == name:
+                    return scan['id']
+            print(f'[!] ERROR: scan name {name} not found. Exiting')
+            exit(-1)
+
+
+        def scan(access_key, secret_key, scan_name, targets):
+
+            tio = TenableIO(access_key, secret_key)
+            id = get_scan_id(tio, scan_name)
+
+            if targets:
+                print('[+] Launching scan against {}'.format(', '.join(targets)))
+                tio.scans.launch(id, targets)
+            else:
+                print('[+] Launching scan')
+                tio.scans.launch(id)
+
+            if wait_for_scan(tio, id) == 'completed':
+                print('[+] Exporting scan')
+                with open('scan.nessus' ,'wb') as reportobj:
+                    tio.scans.export(id, fobj=reportobj)
+            else:
+                print('[!] ERROR: scan not completed. Exiting')
+                exit(-1)
+
+
+        def wait_for_scan(tio, id):
+
+            while id:
+                status = tio.scans.status(id)
+                print(f'    {status}')
+
+                if status in ['initializing', 'pending', 'running',]:
+                    time.sleep(60)
+                else:
+                    return status
+
+
+        def parse_args():
+            parser = argparse.ArgumentParser()
+            parser.add_argument('--access_key', help='Tenable.io API Access Key', required=True)
+            parser.add_argument('--secret_key', help='Tenable.io API Secret Key', required=True)
+            parser.add_argument('--scan_name', help='Scan Name', required=True)
+            parser.add_argument('-ic', help='Compliance status to ignore', nargs='?', default='PASSED')
+            parser.add_argument('-iv', help='Vulnerability risk to ignore', nargs='?', default='None')
+            return parser.parse_args()
+
+
+        def main():
+            args = parse_args()
+            
+            targets = None
+
+            if os.path.isfile('targets'):
+                with open('targets', 'r') as f_in:
+                    targets = f_in.read().splitlines()
+            
+            scan(args.access_key, args.secret_key, args.scan_name, targets)
+            if not print_results('scan.nessus', args.iv, args.ic):
+                exit(-1)
+            else:
+                exit(0)
+
+
+        if __name__ == '__main__':
+            main()
+      args: '{|"--access_key " + credential(''tio-access-key'').text + " --secret_key " + credential(''tio-secret-key'').text + " -ic ''" + vars.ignore_compliance + "'' -iv ''" + vars.ignore_vulnerability + "'' --scan_name ''" + vars.scan_name + "''"|}'
+  - id: shell1
+    name: Install pyTenable
+    type: shell_script
+    depends:
+      - shell2
+    properties:
+      content: pip3 install pyTenable
+  - id: aws_install1
+    name: Install AWS CLI
+    type: aws_install
+    depends: []
+    properties:
+      version: latest
+  - id: shell2
+    name: Build Stack
+    type: shell_script
+    depends:
+      - aws_install1
+    properties:
+      content: |-
+        #!/bin/bash
+
+        instance_id=$(aws ec2 run-instances --image-id ami-0ca5c3bd5a268e7db --count 1 --instance-type t1.micro --key-name demo-default --security-groups demo-default | jq '.Instances[0].InstanceId' | cut -d\" -f 2)
+        sleep 30
+        ip=$(aws ec2 describe-instances --instance-ids $instance_id | jq '.Reservations[0].Instances[0].PublicIpAddress' | cut -d\" -f 2)
+        echo $ip > targets
+      env: |-
+        {|[
+          {
+            "name": "AWS_ACCESS_KEY_ID",
+            "value": credential('aws').access_key
+          },
+          {
+            "name": "AWS_SECRET_ACCESS_KEY",
+            "value": credential('aws').secret_key
+          },
+          {
+            "name": "AWS_DEFAULT_REGION",
+            "value": "us-west-2"
+          }
+        ]|}
+  - id: debug1
+    name: Deploy Stack
+    type: debug
+    depends:
+      - py1
+    properties:
+      message: Stack is ready to be deployed
+outputs: []
+layout:
+  elements:
+    - id: py1
+      position:
+        x: -325
+        'y': -255
+      links:
+        - sourceId: shell1
+          sourcePort: bottom
+          targetPort: top
+          vertices: []
+      image_id: 6086f7a8fd9403467e09bb53
+    - id: shell1
+      position:
+        x: -325
+        'y': -335
+      links:
+        - sourceId: shell2
+          sourcePort: right
+          targetPort: left
+          vertices: []
+      image_id: 6087270afd94033d1409bb5c
+    - id: aws_install1
+      position:
+        x: -525
+        'y': -415
+      links: []
+    - id: shell2
+      position:
+        x: -525
+        'y': -335
+      links:
+        - sourceId: aws_install1
+          sourcePort: bottom
+          targetPort: top
+          vertices: []
+      image_id: 60873bf1fd940315de09bb65
+    - id: debug1
+      position:
+        x: -125
+        'y': -255
+      links:
+        - sourceId: py1
+          sourcePort: right
+          targetPort: left
+          vertices: []
+      image_id: 60873bf1fd940315de09bb65
