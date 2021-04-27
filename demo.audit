@@ -1,0 +1,21 @@
+<check_type:"Unix">
+
+<custom_item>
+    system      : "Linux"
+    type        : FILE_CONTENT_CHECK
+    description : "5.2.10 Ensure SSH root login is disabled"
+    info        : "The PermitRootLogin parameter specifies if the root user can log in using ssh. The default is no.
+    Rationale:
+    Disallowing root logins over SSH requires system admins to authenticate using their own individual account, then escalating to root via sudo or su. This in turn limits opportunity for non-repudiation and provides a clear audit trail in the event of a security incident"
+    solution    : "Edit the /etc/ssh/sshd_config file to set the parameter as follows:
+    PermitRootLogin no
+    Default Value:
+    PermitRootLogin without-password"
+    reference   : "800-171|3.1.15,800-171|3.1.2,800-53|AC-17(4),CSCv7|4.3,CSF|PR.AC-3,CSF|PR.PT-4,ITSG-33|AC-17(4),LEVEL|1S,SWIFT-CSCv1|5.1"
+    see_also    : "https://workbench.cisecurity.org/files/2485"
+    file        : "/etc/ssh/sshd_config"
+    regex       : "PermitRootLogin"
+    expect      : "^[\\s]*PermitRootLogin[\\s]+no[\\s]*$"
+</custom_item>
+
+</check_type>
